@@ -615,6 +615,11 @@ Enter the administrator password to manage library books.
 
 <div id="uploadArea" style="display:none">
 
+<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--green);font-weight:600;margin-bottom:10px;">
+    <span style="width:8px;height:8px;border-radius:50%;background:#315b45;display:inline-block;"></span>
+    Cloud Sync Active &bull; Uploads sync across all phones &amp; devices
+</div>
+
 <p class="hint">
 Add a title, author, and PDF book. A cover image can also be provided or will be automatically created.
 </p>
@@ -685,7 +690,31 @@ Add a title, author, and PDF book. A cover image can also be provided or will be
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <script>
-const API = "./api";
+const HOSTED_BACKEND_URL = "https://ais-pre-33fyudgfv7gkg7rmslaoss-835682037296.europe-west2.run.app";
+
+function getApiEndpoint(path) {
+    const cleanPath = path.startsWith("/") ? path : "/" + path;
+    const origin = window.location.origin || "";
+    // If running on local server or directly on Cloud Run, use relative ./api
+    if (origin.includes("run.app") || origin.includes("localhost") || origin.includes("127.0.0.1")) {
+        return "./api" + cleanPath;
+    }
+    // If hosted on GitHub Pages (github.io) or any external static site:
+    // Connect to the centralized hosted backend so that books are shared across all phones!
+    return HOSTED_BACKEND_URL + "/api" + cleanPath;
+}
+
+function resolveAssetUrl(url) {
+    if (!url) return "";
+    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("blob:") || url.startsWith("data:")) {
+        return url;
+    }
+    const origin = window.location.origin || "";
+    if (origin.includes("run.app") || origin.includes("localhost") || origin.includes("127.0.0.1")) {
+        return url;
+    }
+    return HOSTED_BACKEND_URL + (url.startsWith("/") ? url : "/" + url);
+}
 
 let isAdmin = false;
 let pdfDoc = null;
@@ -699,7 +728,7 @@ if (window.pdfjsLib) {
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 }
 
-// Client-side storage for GitHub Pages and static deployments
+// Client-side storage for fallback offline access
 const DB_NAME = "pageco_library_db";
 const DB_STORE = "books";
 
@@ -772,11 +801,22 @@ function generateCoverSvgBlob(title, author) {
 }
 
 async function api(path, options = {}) {
+    const targetUrl = getApiEndpoint(path);
+    const token = sessionStorage.getItem("pageco_admin_token") || localStorage.getItem("pageco_admin_token") || "";
+
+    const headers = {
+        ...(options.headers || {})
+    };
+    if (token) {
+        headers["Authorization"] = "Bearer " + token;
+    }
+
     let response;
     try {
-        response = await fetch(API + path, {
+        response = await fetch(targetUrl, {
             credentials: "include",
-            ...options
+            ...options,
+            headers
         });
     } catch (netErr) {
         throw new Error("404: Network unavailable or static host");
@@ -885,6 +925,8 @@ async function login() {
 
     if (authenticated) {
         isAdmin = true;
+        sessionStorage.setItem("pageco_admin_token", password);
+        localStorage.setItem("pageco_admin_token", password);
         if (input) input.value = "";
         openAdmin();
         toast("Signed in successfully.");
@@ -899,6 +941,8 @@ async function logout() {
     } catch (e) {}
 
     sessionStorage.removeItem("pageco_admin");
+    sessionStorage.removeItem("pageco_admin_token");
+    localStorage.removeItem("pageco_admin_token");
     isAdmin = false;
     openAdmin();
 }
@@ -1078,7 +1122,7 @@ async function renderBooks() {
                 const rotations = [-12, 5, 14];
                 heroArt.innerHTML = sampleUploads.map((b, idx) => `
                     <div class="hero-book" style="transform:rotate(${rotations[idx % 3]}deg)" onclick="openReader('${b.id}')" title="Read ${escapeHTML(b.title)}">
-                        <img src="${b.coverUrl}" alt="${escapeHTML(b.title)} cover">
+                        <img src="${resolveAssetUrl(b.coverUrl)}" alt="${escapeHTML(b.title)} cover">
                     </div>
                 `).join("");
             } else {
@@ -1120,7 +1164,7 @@ async function renderBooks() {
             cover.className = "cover";
 
             const img = document.createElement("img");
-            img.src = b.coverUrl;
+            img.src = resolveAssetUrl(b.coverUrl);
             img.alt = b.title + " cover";
 
             cover.appendChild(img);
@@ -1173,7 +1217,7 @@ async function openReader(id) {
             const buffer = await b.pdfBlob.arrayBuffer();
             docSource = { data: buffer };
         } else {
-            docSource = { url: API + "/books/" + encodeURIComponent(id) + "/pdf" };
+            docSource = { url: resolveAssetUrl("/api/books/" + encodeURIComponent(id) + "/pdf") };
         }
 
         pdfDoc = await pdfjsLib.getDocument(docSource).promise;

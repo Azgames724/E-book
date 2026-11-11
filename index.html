@@ -5,6 +5,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Page & Co. — Digital Library</title>
+<meta name="description" content="Digital library and e-book management platform with reader and admin dashboard.">
+<meta property="og:title" content="Page & Co. — Digital Library">
+<meta property="og:description" content="Digital library and e-book management platform with reader and admin dashboard.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet">
@@ -152,6 +155,63 @@ transform:rotate(5deg) translateY(-8px)
 .book.three {
 background:#647b8b;
 transform:rotate(14deg)
+}
+
+.hero-art .hero-book {
+width:125px;
+height:175px;
+border-radius:5px 12px 12px 5px;
+box-shadow:12px 14px 25px #203b2b30;
+overflow:hidden;
+cursor:pointer;
+position:relative;
+transition:transform .2s ease;
+background:#244735;
+display:flex;
+align-items:center;
+justify-content:center;
+}
+
+.hero-art .hero-book:hover {
+transform:scale(1.08) translateY(-6px)!important;
+z-index:3;
+}
+
+.hero-art .hero-book img {
+width:100%;
+height:100%;
+object-fit:cover;
+}
+
+.hero-art .hero-empty {
+padding:20px 24px;
+border-radius:14px;
+background:rgba(255,255,255,0.7);
+border:1px dashed var(--line);
+text-align:center;
+color:var(--muted);
+font-size:13px;
+transform:rotate(5deg);
+max-width:240px;
+}
+
+.hero-art .hero-empty span {
+display:block;
+font:600 17px "Playfair Display",serif;
+color:var(--green);
+margin-bottom:4px;
+}
+
+.book-card .read-btn {
+display:inline-block;
+margin-top:8px;
+font-size:12px;
+font-weight:600;
+color:var(--green);
+}
+
+.book-card:hover .read-btn {
+text-decoration:underline;
 }
 
 .content {
@@ -498,10 +558,11 @@ font-size:15px
 <button class="primary" onclick="scrollToBooks()">Explore the library →</button>
 </div>
 
-<div class="hero-art">
-<div class="book one">The Art<br>of Reading</div>
-<div class="book two">Little<br>Stories</div>
-<div class="book three">A World<br>Within</div>
+<div class="hero-art" id="heroArt">
+<div class="hero-empty">
+<span>Digital Reading Room</span>
+Books uploaded by the administrator will appear here for readers
+</div>
 </div>
 </section>
 
@@ -518,8 +579,8 @@ oninput="renderBooks()">
 
 <div class="shelf" id="shelf">
 <div class="empty">
-<strong>Your library is waiting</strong>
-Books added by the administrator will appear here.
+<strong>Your library is ready</strong>
+Books added by the administrator will appear here for readers.
 </div>
 </div>
 </main>
@@ -547,15 +608,14 @@ placeholder="Enter password">
 </div>
 
 <p class="hint">
-Use the administrator password configured on the server.
+Enter the administrator password to manage library books.
 </p>
 </div>
 
 <div id="uploadArea" style="display:none">
 
 <p class="hint">
-Add a title, author, PDF and cover image.
-Files are uploaded to the library server.
+Add a title, author, and PDF book. A cover image can also be provided or will be automatically created.
 </p>
 
 <div class="field">
@@ -574,7 +634,7 @@ Files are uploaded to the library server.
 </div>
 
 <div class="field">
-<label>Cover image *</label>
+<label>Cover image (optional &mdash; auto-generated if omitted)</label>
 <input id="bookCover" type="file" accept="image/*">
 </div>
 
@@ -735,17 +795,17 @@ async function addBook() {
     const cover =
         document.getElementById("bookCover").files[0];
 
-    if (!title || !pdf || !cover) {
-        toast("Please add a title, PDF and cover image.");
+    if (!title || !pdf) {
+        toast("Please provide a title and select a PDF book.");
         return;
     }
 
     if (pdf.type !== "application/pdf") {
-        toast("Please select a PDF file.");
+        toast("Please select a valid PDF file.");
         return;
     }
 
-    if (!cover.type.startsWith("image/")) {
+    if (cover && !cover.type.startsWith("image/")) {
         toast("Please select an image for the cover.");
         return;
     }
@@ -755,7 +815,9 @@ async function addBook() {
     form.append("title", title);
     form.append("author", author);
     form.append("pdf", pdf);
-    form.append("cover", cover);
+    if (cover) {
+        form.append("cover", cover);
+    }
 
     try {
         await api("/admin/books", {
@@ -784,10 +846,10 @@ async function refreshAdminList() {
 
         document.getElementById("adminBooks").innerHTML =
             books.length
-            ? "<b>Manage books</b><br>" +
+            ? "<b>Manage books (" + books.length + ")</b><br>" +
               books.map(b => `
-                <div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
-                    ${escapeHTML(b.title)}
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(b.title)}</span>
                     <button class="quiet" onclick="removeBook('${b.id}')">Remove</button>
                 </div>
               `).join("")
@@ -828,11 +890,32 @@ function escapeHTML(s) {
 
 async function renderBooks() {
     const shelf = document.getElementById("shelf");
+    const heroArt = document.getElementById("heroArt");
 
     try {
         booksCache = await api("/books");
 
-        const q = document.getElementById("search").value.toLowerCase();
+        // Update hero with real uploaded books
+        if (heroArt) {
+            if (booksCache.length > 0) {
+                const sampleUploads = booksCache.slice(0, 3);
+                const rotations = [-12, 5, 14];
+                heroArt.innerHTML = sampleUploads.map((b, idx) => `
+                    <div class="hero-book" style="transform:rotate(${rotations[idx % 3]}deg)" onclick="openReader('${b.id}')" title="Read ${escapeHTML(b.title)}">
+                        <img src="${b.coverUrl}" alt="${escapeHTML(b.title)} cover">
+                    </div>
+                `).join("");
+            } else {
+                heroArt.innerHTML = `
+                    <div class="hero-empty">
+                        <span>Digital Reading Room</span>
+                        Books uploaded by the administrator will appear here for readers
+                    </div>
+                `;
+            }
+        }
+
+        const q = (document.getElementById("search").value || "").toLowerCase();
 
         const filtered = booksCache.filter(b =>
             (b.title + " " + (b.author || ""))
@@ -842,10 +925,10 @@ async function renderBooks() {
         if (!filtered.length) {
             shelf.innerHTML = `
                 <div class="empty">
-                    <strong>${booksCache.length ? "No matching books" : "Your library is waiting"}</strong>
+                    <strong>${booksCache.length ? "No matching books" : "Your library is ready"}</strong>
                     ${booksCache.length
                         ? "Try another search."
-                        : "Books added by the administrator will appear here."}
+                        : "Books added by the administrator will appear here for readers."}
                 </div>
             `;
             return;
@@ -872,7 +955,11 @@ async function renderBooks() {
             const p = document.createElement("p");
             p.textContent = b.author || "Unknown author";
 
-            card.append(cover, h, p);
+            const readBtn = document.createElement("div");
+            readBtn.className = "read-btn";
+            readBtn.innerHTML = "Read Now &rarr;";
+
+            card.append(cover, h, p, readBtn);
 
             card.onclick = () => openReader(b.id);
 

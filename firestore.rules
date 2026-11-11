@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'abeniship13@gmail.com' && request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['id', 'title', 'author', 'pdfUrl']) &&
+             data.keys().hasOnly(['id', 'title', 'author', 'description', 'category', 'coverUrl', 'pdfUrl', 'fileName', 'fileSize', 'addedAt']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.author is string && data.author.size() > 0 && data.author.size() <= 150 &&
+             data.pdfUrl is string && data.pdfUrl.size() > 0 && data.pdfUrl.size() <= 500000 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
+             (!('coverUrl' in data) || (data.coverUrl is string && data.coverUrl.size() <= 500000)) &&
+             (!('fileName' in data) || (data.fileName is string && data.fileName.size() <= 255)) &&
+             (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0)) &&
+             (!('addedAt' in data) || (data.addedAt is number));
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Admin authorization records
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Public Library Books Collection
+    match /books/{bookId} {
+      // Any reader can browse and read books across all devices
+      allow get, list: if true;
+
+      // Creating a book requires valid ID and strict schema compliance
+      allow create: if isValidId(bookId) &&
+                       isValidBook(incoming()) &&
+                       incoming().id == bookId;
+
+      // Updating a book requires strict schema compliance and maintaining immutable ID
+      allow update: if isValidId(bookId) &&
+                       isValidBook(incoming()) &&
+                       incoming().id == existing().id &&
+                       incoming().id == bookId;
+
+      // Deleting a book
+      allow delete: if isValidId(bookId);
+    }
+  }
+}

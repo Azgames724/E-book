@@ -19,15 +19,17 @@
 
 ### For Administrators
 - **Publishing Dashboard**: Upload digital publications (PDF) with author attribution and optional custom cover images.
+- **Firebase Cloud Synchronization**: Direct integration with Firebase Firestore ensures books uploaded from any device or phone are instantly synchronized in real time to all readers worldwide.
 - **Automatic Cover Generation**: Generates customized editorial SVG book covers automatically if a cover image is omitted.
 - **Session-Based Authentication**: Protected administration panel guarded by brute-force rate limiting and timing-safe credential verification.
-- **Catalog Management**: Instant catalog pruning with synchronized filesystem cleanup for removed titles.
+- **Catalog Management**: Instant catalog pruning with synchronized cloud and filesystem cleanup for removed titles.
 
 ### Security & Architecture
+- **Firebase Firestore Security Rules**: Granular, hardened access rules ensuring public reading access and strict schema validation for digital publication records.
 - **Hardened HTTP Headers**: Comprehensive security headers configured via `helmet`.
 - **Zero Secret Exposure**: Strict separation of administrative credentials from client-side bundles and markup.
 - **Rate Limiting**: IP-based rate limiting on sensitive authentication routes via `express-rate-limit`.
-- **Atomic State Updates**: Safe atomic file writes preventing race conditions during catalog synchronization.
+- **Atomic State Updates**: Safe atomic file writes and cloud database snapshots preventing race conditions during catalog synchronization.
 
 ---
 
@@ -35,10 +37,11 @@
 
 | Layer | Technology |
 |---|---|
+| **Cloud Database** | Firebase Firestore (Real-time synchronization across all phones) |
 | **Runtime** | Node.js (v18+) |
 | **Server Framework** | Express.js |
 | **Authentication & Sessions** | `express-session`, `crypto` |
-| **Security & Protection** | `helmet`, `express-rate-limit` |
+| **Security & Protection** | `helmet`, `express-rate-limit`, Firestore Security Rules |
 | **File Handling** | `multer` |
 | **PDF Rendering** | PDF.js (Mozilla) |
 | **Frontend** | Vanilla JavaScript, Semantic HTML5, CSS3 Custom Properties |

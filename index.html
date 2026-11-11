@@ -615,13 +615,13 @@ Enter the administrator password to manage library books.
 
 <div id="uploadArea" style="display:none">
 
-<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--green);font-weight:600;margin-bottom:10px;">
-    <span style="width:8px;height:8px;border-radius:50%;background:#315b45;display:inline-block;"></span>
-    Cloud Sync Active &bull; Uploads sync across all phones &amp; devices
+<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--green);font-weight:600;margin-bottom:12px;padding:9px 12px;background:#eef4ee;border-radius:8px;border:1px solid #d4e2d4;">
+    <span style="width:9px;height:9px;border-radius:50%;background:#315b45;display:inline-block;box-shadow:0 0 0 3px rgba(49,91,69,0.2);"></span>
+    <span>Firebase Cloud Sync Active &bull; Books sync to all phones in real time</span>
 </div>
 
 <p class="hint">
-Add a title, author, and PDF book. A cover image can also be provided or will be automatically created.
+Add a title, author, and PDF. The book will automatically upload to Firebase and become visible on all phones and devices.
 </p>
 
 <div class="field">
@@ -635,8 +635,13 @@ Add a title, author, and PDF book. A cover image can also be provided or will be
 </div>
 
 <div class="field">
-<label>PDF book *</label>
+<label>PDF book file *</label>
 <input id="bookPdf" type="file" accept="application/pdf">
+</div>
+
+<div class="field">
+<label>Or direct PDF web link (optional cloud or public URL)</label>
+<input id="bookPdfUrl" type="url" placeholder="https://example.com/sample.pdf">
 </div>
 
 <div class="field">
@@ -646,7 +651,7 @@ Add a title, author, and PDF book. A cover image can also be provided or will be
 
 <div class="actions">
 <button class="quiet" onclick="logout()">Log out</button>
-<button class="primary" onclick="addBook()">Add to library</button>
+<button class="primary" id="addBookBtn" onclick="addBook()">Add to library</button>
 </div>
 
 <div id="adminBooks" class="hint" style="margin-top:20px"></div>
@@ -689,18 +694,79 @@ Add a title, author, and PDF book. A cover image can also be provided or will be
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import {
+    getFirestore,
+    collection,
+    doc,
+    setDoc,
+    deleteDoc,
+    onSnapshot,
+    getDocs,
+    getDocFromServer
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+const firebaseConfig = {
+    projectId: "snappy-trainer-jcf5x",
+    appId: "1:413867392673:web:9c723b4adf55c25aa9fae0",
+    apiKey: "AIzaSyDG-opxc2LOundcFESn4Tyc9SIDP7WoQEw",
+    authDomain: "snappy-trainer-jcf5x.firebaseapp.com",
+    firestoreDatabaseId: "ai-studio-ebook-1cbb68ad-2c1c-401e-92ab-a21970800ac2",
+    storageBucket: "snappy-trainer-jcf5x.firebasestorage.app",
+    messagingSenderId: "413867392673"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+const OperationType = {
+    CREATE: "create",
+    UPDATE: "update",
+    DELETE: "delete",
+    LIST: "list",
+    GET: "get",
+    WRITE: "write"
+};
+
+function handleFirestoreError(error, operationType, path) {
+    const errInfo = {
+        error: error instanceof Error ? error.message : String(error),
+        authInfo: {
+            userId: null,
+            email: null,
+            emailVerified: null,
+            isAnonymous: null,
+            tenantId: null,
+            providerInfo: []
+        },
+        operationType,
+        path
+    };
+    console.error("Firestore Error: ", JSON.stringify(errInfo));
+    return errInfo;
+}
+
+// Test connection on boot per Firebase skill guidelines
+async function testConnection() {
+    try {
+        await getDocFromServer(doc(db, "books", "connection-probe"));
+    } catch (error) {
+        if (error instanceof Error && error.message.includes("the client is offline")) {
+            console.warn("Client is offline. Check your network or Firebase configuration.");
+        }
+    }
+}
+testConnection();
+
 const HOSTED_BACKEND_URL = "https://ais-pre-33fyudgfv7gkg7rmslaoss-835682037296.europe-west2.run.app";
 
 function getApiEndpoint(path) {
     const cleanPath = path.startsWith("/") ? path : "/" + path;
     const origin = window.location.origin || "";
-    // If running on local server or directly on Cloud Run, use relative ./api
     if (origin.includes("run.app") || origin.includes("localhost") || origin.includes("127.0.0.1")) {
         return "./api" + cleanPath;
     }
-    // If hosted on GitHub Pages (github.io) or any external static site:
-    // Connect to the centralized hosted backend so that books are shared across all phones!
     return HOSTED_BACKEND_URL + "/api" + cleanPath;
 }
 
@@ -722,13 +788,14 @@ let currentPage = 1;
 let zoom = 1;
 let activeBook = null;
 let booksCache = [];
+let firestoreBooks = [];
 
 if (window.pdfjsLib) {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 }
 
-// Client-side storage for fallback offline access
+// Client-side fallback storage
 const DB_NAME = "pageco_library_db";
 const DB_STORE = "books";
 
@@ -737,9 +804,9 @@ function openDB() {
         if (!window.indexedDB) return resolve(null);
         const req = indexedDB.open(DB_NAME, 1);
         req.onupgradeneeded = (e) => {
-            const db = e.target.result;
-            if (!db.objectStoreNames.contains(DB_STORE)) {
-                db.createObjectStore(DB_STORE, { keyPath: "id" });
+            const d = e.target.result;
+            if (!d.objectStoreNames.contains(DB_STORE)) {
+                d.createObjectStore(DB_STORE, { keyPath: "id" });
             }
         };
         req.onsuccess = () => resolve(req.result);
@@ -749,10 +816,10 @@ function openDB() {
 
 async function getLocalBooks() {
     try {
-        const db = await openDB();
-        if (!db) return [];
+        const d = await openDB();
+        if (!d) return [];
         return new Promise((resolve) => {
-            const tx = db.transaction(DB_STORE, "readonly");
+            const tx = d.transaction(DB_STORE, "readonly");
             const store = tx.objectStore(DB_STORE);
             const req = store.getAll();
             req.onsuccess = () => resolve(req.result || []);
@@ -765,10 +832,10 @@ async function getLocalBooks() {
 
 async function saveLocalBook(book) {
     try {
-        const db = await openDB();
-        if (!db) return;
+        const d = await openDB();
+        if (!d) return;
         return new Promise((resolve, reject) => {
-            const tx = db.transaction(DB_STORE, "readwrite");
+            const tx = d.transaction(DB_STORE, "readwrite");
             const store = tx.objectStore(DB_STORE);
             const req = store.put(book);
             req.onsuccess = () => resolve();
@@ -781,10 +848,10 @@ async function saveLocalBook(book) {
 
 async function deleteLocalBook(id) {
     try {
-        const db = await openDB();
-        if (!db) return;
+        const d = await openDB();
+        if (!d) return;
         return new Promise((resolve) => {
-            const tx = db.transaction(DB_STORE, "readwrite");
+            const tx = d.transaction(DB_STORE, "readwrite");
             const store = tx.objectStore(DB_STORE);
             const req = store.delete(id);
             req.onsuccess = () => resolve();
@@ -793,11 +860,20 @@ async function deleteLocalBook(id) {
     } catch {}
 }
 
-function generateCoverSvgBlob(title, author) {
+function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+    });
+}
+
+function generateCoverSvgDataUrl(title, author) {
     const safeTitle = (title || "Book").replace(/[&<>"']/g, "");
     const safeAuthor = (author || "Unknown Author").replace(/[&<>"']/g, "");
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 580" width="100%" height="100%"><defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#2c4d3b"/><stop offset="100%" stop-color="#183124"/></linearGradient></defs><rect width="400" height="580" fill="url(#bg)"/><rect x="25" y="25" width="350" height="530" fill="none" stroke="#c49a55" stroke-width="2" stroke-opacity="0.6"/><text x="200" y="240" text-anchor="middle" fill="#fffdf9" font-family="serif" font-weight="bold" font-size="28">${safeTitle.slice(0, 45)}</text><circle cx="200" cy="300" r="4" fill="#c49a55"/><text x="200" y="350" text-anchor="middle" fill="#d0d7cf" font-family="sans-serif" font-size="16">${safeAuthor.slice(0, 40)}</text><text x="200" y="520" text-anchor="middle" fill="#c49a55" font-family="sans-serif" font-size="11" letter-spacing="2">PAGE &amp; CO.</text></svg>`;
-    return new Blob([svg], { type: "image/svg+xml" });
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }
 
 async function api(path, options = {}) {
@@ -845,13 +921,14 @@ async function api(path, options = {}) {
 }
 
 function scrollToBooks() {
-    document.getElementById("library").scrollIntoView({
+    document.getElementById("library")?.scrollIntoView({
         behavior: "smooth"
     });
 }
 
 function toast(msg) {
     const t = document.getElementById("toast");
+    if (!t) return;
     t.textContent = msg;
     t.classList.add("show");
 
@@ -861,19 +938,18 @@ function toast(msg) {
 }
 
 function openAdmin() {
-    document.getElementById("adminModal").classList.add("show");
+    document.getElementById("adminModal")?.classList.add("show");
 
-    document.getElementById("loginArea").style.display =
-        isAdmin ? "none" : "block";
-
-    document.getElementById("uploadArea").style.display =
-        isAdmin ? "block" : "none";
+    const loginArea = document.getElementById("loginArea");
+    const uploadArea = document.getElementById("uploadArea");
+    if (loginArea) loginArea.style.display = isAdmin ? "none" : "block";
+    if (uploadArea) uploadArea.style.display = isAdmin ? "block" : "none";
 
     if (isAdmin) refreshAdminList();
 }
 
 function closeAdmin() {
-    document.getElementById("adminModal").classList.remove("show");
+    document.getElementById("adminModal")?.classList.remove("show");
 }
 
 async function login() {
@@ -887,7 +963,7 @@ async function login() {
 
     let authenticated = false;
 
-    // 1. Try server-side authentication first
+    // 1. Try server-side authentication
     try {
         await api("/admin/login", {
             method: "POST",
@@ -898,7 +974,7 @@ async function login() {
         });
         authenticated = true;
     } catch (err) {
-        // 2. If running on GitHub Pages (static host without Node backend) or server returned 404/405
+        // 2. Fallback check if host is static GitHub Pages
         const isStaticOrOffline =
             err.message.includes("404") ||
             err.message.includes("405") ||
@@ -929,7 +1005,7 @@ async function login() {
         localStorage.setItem("pageco_admin_token", password);
         if (input) input.value = "";
         openAdmin();
-        toast("Signed in successfully.");
+        toast("Signed in successfully as Administrator.");
     }
 }
 
@@ -948,97 +1024,130 @@ async function logout() {
 }
 
 async function addBook() {
-    const title =
-        document.getElementById("bookTitle").value.trim();
+    const title = (document.getElementById("bookTitle")?.value || "").trim();
+    const author = (document.getElementById("bookAuthor")?.value || "").trim();
+    const pdfFile = document.getElementById("bookPdf")?.files?.[0];
+    const pdfUrlInput = (document.getElementById("bookPdfUrl")?.value || "").trim();
+    const coverFile = document.getElementById("bookCover")?.files?.[0];
 
-    const author =
-        document.getElementById("bookAuthor").value.trim();
-
-    const pdf =
-        document.getElementById("bookPdf").files[0];
-
-    const cover =
-        document.getElementById("bookCover").files[0];
-
-    if (!title || !pdf) {
-        toast("Please provide a title and select a PDF book.");
+    if (!title) {
+        toast("Please provide a book title.");
         return;
     }
 
-    if (pdf.type !== "application/pdf") {
+    if (!pdfFile && !pdfUrlInput) {
+        toast("Please select a PDF file or enter a PDF web link.");
+        return;
+    }
+
+    if (pdfFile && pdfFile.type !== "application/pdf") {
         toast("Please select a valid PDF file.");
         return;
     }
 
-    if (cover && !cover.type.startsWith("image/")) {
-        toast("Please select an image for the cover.");
+    if (coverFile && !coverFile.type.startsWith("image/")) {
+        toast("Please select a valid image for the cover.");
         return;
     }
 
-    let uploadSuccess = false;
-
-    // 1. Try server upload
-    try {
-        const form = new FormData();
-        form.append("title", title);
-        form.append("author", author);
-        form.append("pdf", pdf);
-        if (cover) {
-            form.append("cover", cover);
-        }
-
-        await api("/admin/books", {
-            method: "POST",
-            body: form
-        });
-        uploadSuccess = true;
-    } catch (err) {
-        // 2. If static GitHub Pages host, save to local IndexedDB
-        const isStaticOrOffline =
-            err.message.includes("404") ||
-            err.message.includes("405") ||
-            err.message.includes("Network") ||
-            err.message.includes("Failed to fetch");
-
-        if (isStaticOrOffline) {
-            const coverBlob = cover || generateCoverSvgBlob(title, author);
-            const localBook = {
-                id: "local-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
-                title,
-                author,
-                addedAt: Date.now(),
-                pdfBlob: pdf,
-                coverBlob: coverBlob,
-                isLocal: true
-            };
-            await saveLocalBook(localBook);
-            uploadSuccess = true;
-        } else {
-            toast(err.message);
-            return;
-        }
+    const addBtn = document.getElementById("addBookBtn");
+    if (addBtn) {
+        addBtn.disabled = true;
+        addBtn.textContent = "Uploading to Firebase...";
     }
 
-    if (uploadSuccess) {
-        document.getElementById("bookTitle").value = "";
-        document.getElementById("bookAuthor").value = "";
-        document.getElementById("bookPdf").value = "";
-        document.getElementById("bookCover").value = "";
+    try {
+        let finalPdfUrl = pdfUrlInput;
+        let finalCoverUrl = "";
+        const bookId = "book-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
 
+        // 1. Process cover
+        if (coverFile) {
+            finalCoverUrl = await readFileAsDataURL(coverFile);
+        } else {
+            finalCoverUrl = generateCoverSvgDataUrl(title, author);
+        }
+
+        // 2. If PDF file provided, try server upload
+        let serverUploadOk = false;
+        if (pdfFile) {
+            try {
+                const form = new FormData();
+                form.append("title", title);
+                form.append("author", author);
+                form.append("pdf", pdfFile);
+                if (coverFile) form.append("cover", coverFile);
+
+                const serverRes = await api("/admin/books", {
+                    method: "POST",
+                    body: form
+                });
+                if (serverRes && serverRes.id) {
+                    serverUploadOk = true;
+                }
+            } catch (serverErr) {
+                console.warn("Backend server upload bypassed, using direct cloud sync:", serverErr.message);
+            }
+
+            if (!serverUploadOk) {
+                // If backend unreachable and file <= 750KB: embed in Firestore
+                if (pdfFile.size <= 750 * 1024) {
+                    finalPdfUrl = await readFileAsDataURL(pdfFile);
+                } else if (!finalPdfUrl) {
+                    throw new Error("File exceeds 750KB for direct document storage. Please enter a direct PDF web link or ensure the hosted backend is running.");
+                }
+            }
+        }
+
+        // 3. Write directly to Firestore if not already processed by server
+        if (!serverUploadOk && finalPdfUrl) {
+            const newDoc = {
+                id: bookId,
+                title,
+                author: author || "Unknown author",
+                coverUrl: finalCoverUrl,
+                pdfUrl: finalPdfUrl,
+                fileName: pdfFile ? pdfFile.name : "book.pdf",
+                fileSize: pdfFile ? pdfFile.size : 0,
+                addedAt: Date.now()
+            };
+            try {
+                await setDoc(doc(db, "books", bookId), newDoc);
+            } catch (fbErr) {
+                handleFirestoreError(fbErr, OperationType.CREATE, "books/" + bookId);
+                throw fbErr;
+            }
+        }
+
+        // Clear input form
+        if (document.getElementById("bookTitle")) document.getElementById("bookTitle").value = "";
+        if (document.getElementById("bookAuthor")) document.getElementById("bookAuthor").value = "";
+        if (document.getElementById("bookPdf")) document.getElementById("bookPdf").value = "";
+        if (document.getElementById("bookPdfUrl")) document.getElementById("bookPdfUrl").value = "";
+        if (document.getElementById("bookCover")) document.getElementById("bookCover").value = "";
+
+        toast("Book uploaded to Firebase! Available on all phones.");
         await renderBooks();
         await refreshAdminList();
-
-        toast("Book uploaded to the library.");
+    } catch (err) {
+        toast("Upload error: " + (err.message || "Failed to upload."));
+    } finally {
+        if (addBtn) {
+            addBtn.disabled = false;
+            addBtn.textContent = "Add to library";
+        }
     }
 }
 
 async function refreshAdminList() {
     try {
         const books = booksCache || [];
+        const container = document.getElementById("adminBooks");
+        if (!container) return;
 
-        document.getElementById("adminBooks").innerHTML =
+        container.innerHTML =
             books.length
-            ? "<b>Manage books (" + books.length + ")</b><br>" +
+            ? "<b>Manage books in Firebase (" + books.length + ")</b><br>" +
               books.map(b => `
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee">
                     <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(b.title)}</span>
@@ -1055,24 +1164,25 @@ async function refreshAdminList() {
 async function removeBook(id) {
     if (!confirm("Remove this book from the library?")) return;
 
-    let removed = false;
     try {
-        await api("/admin/books/" + encodeURIComponent(id), {
-            method: "DELETE"
-        });
-        removed = true;
-    } catch (err) {
-        // Also remove from local storage if static host or local book
+        // Delete from Firestore
+        try {
+            await deleteDoc(doc(db, "books", id));
+        } catch (fbErr) {
+            handleFirestoreError(fbErr, OperationType.DELETE, "books/" + id);
+        }
+
+        // Delete from backend server if reachable
+        try {
+            await api("/admin/books/" + encodeURIComponent(id), { method: "DELETE" });
+        } catch (_) {}
+
         await deleteLocalBook(id);
-        removed = true;
-    }
-
-    await deleteLocalBook(id);
-
-    if (removed) {
+        toast("Book removed.");
         await renderBooks();
         await refreshAdminList();
-        toast("Book removed.");
+    } catch (err) {
+        toast("Remove error: " + (err.message || "Could not remove."));
     }
 }
 
@@ -1089,6 +1199,7 @@ function escapeHTML(s) {
 async function renderBooks() {
     const shelf = document.getElementById("shelf");
     const heroArt = document.getElementById("heroArt");
+    if (!shelf) return;
 
     try {
         let serverBooks = [];
@@ -1099,23 +1210,31 @@ async function renderBooks() {
         }
 
         const localBooks = await getLocalBooks();
-        const combined = [...serverBooks];
-        for (const lb of localBooks) {
-            if (!combined.some(b => b.id === lb.id)) {
-                combined.push({
-                    id: lb.id,
-                    title: lb.title,
-                    author: lb.author,
-                    addedAt: lb.addedAt,
-                    coverUrl: lb.coverBlob ? URL.createObjectURL(lb.coverBlob) : "",
-                    pdfBlob: lb.pdfBlob,
-                    isLocal: true
-                });
-            }
-        }
-        booksCache = combined;
+        const fbBooks = firestoreBooks || [];
 
-        // Update hero with real uploaded books
+        // Merge sources: Firestore (cloud) takes highest precedence
+        const bookMap = new Map();
+        for (const lb of localBooks) {
+            bookMap.set(lb.id, {
+                id: lb.id,
+                title: lb.title,
+                author: lb.author,
+                addedAt: lb.addedAt,
+                coverUrl: lb.coverBlob ? URL.createObjectURL(lb.coverBlob) : "",
+                pdfBlob: lb.pdfBlob,
+                isLocal: true
+            });
+        }
+        for (const sb of serverBooks) {
+            bookMap.set(sb.id, sb);
+        }
+        for (const fb of fbBooks) {
+            bookMap.set(fb.id, fb);
+        }
+
+        booksCache = Array.from(bookMap.values()).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+
+        // Update hero with uploaded books
         if (heroArt) {
             if (booksCache.length > 0) {
                 const sampleUploads = booksCache.slice(0, 3);
@@ -1129,13 +1248,13 @@ async function renderBooks() {
                 heroArt.innerHTML = `
                     <div class="hero-empty">
                         <span>Digital Reading Room</span>
-                        Books uploaded by the administrator will appear here for readers
+                        Books uploaded to Firebase will appear here for readers on all devices
                     </div>
                 `;
             }
         }
 
-        const q = (document.getElementById("search").value || "").toLowerCase();
+        const q = (document.getElementById("search")?.value || "").toLowerCase();
 
         const filtered = booksCache.filter(b =>
             (b.title + " " + (b.author || ""))
@@ -1148,7 +1267,7 @@ async function renderBooks() {
                     <strong>${booksCache.length ? "No matching books" : "Your library is ready"}</strong>
                     ${booksCache.length
                         ? "Try another search."
-                        : "Books added by the administrator will appear here for readers."}
+                        : "Books added by the administrator upload to Firebase and sync automatically across all phones."}
                 </div>
             `;
             return;
@@ -1198,14 +1317,11 @@ async function renderBooks() {
 
 async function openReader(id) {
     const b = booksCache.find(x => x.id === id);
-
     if (!b) return;
 
     activeBook = b;
-
     document.getElementById("readerTitle").textContent = b.title;
-    document.getElementById("reader").classList.add("show");
-
+    document.getElementById("reader")?.classList.add("show");
     document.body.style.overflow = "hidden";
 
     currentPage = 1;
@@ -1216,15 +1332,19 @@ async function openReader(id) {
         if (b.pdfBlob) {
             const buffer = await b.pdfBlob.arrayBuffer();
             docSource = { data: buffer };
+        } else if (b.pdfUrl && b.pdfUrl.startsWith("data:")) {
+            docSource = { url: b.pdfUrl };
+        } else if (b.pdfUrl && (b.pdfUrl.startsWith("http://") || b.pdfUrl.startsWith("https://"))) {
+            docSource = { url: b.pdfUrl };
         } else {
-            docSource = { url: resolveAssetUrl("/api/books/" + encodeURIComponent(id) + "/pdf") };
+            docSource = { url: resolveAssetUrl(b.pdfUrl || ("/api/books/" + encodeURIComponent(id) + "/pdf")) };
         }
 
         pdfDoc = await pdfjsLib.getDocument(docSource).promise;
         await renderPage();
-
     } catch (e) {
-        toast("Could not open this PDF.");
+        console.error("PDF read error:", e);
+        toast("Could not open this PDF. " + (e.message || ""));
         closeReader();
     }
 }
@@ -1233,11 +1353,10 @@ async function renderPage() {
     if (!pdfDoc) return;
 
     const page = await pdfDoc.getPage(currentPage);
-
     const stage = document.querySelector(".reader-stage");
+    if (!stage) return;
 
     const base = page.getViewport({ scale: 1 });
-
     const availableW = Math.max(220, stage.clientWidth - 40);
     const availableH = Math.max(250, stage.clientHeight - 28);
 
@@ -1251,6 +1370,7 @@ async function renderPage() {
     });
 
     const canvas = document.getElementById("pdfCanvas");
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
 
     const ratio = window.devicePixelRatio || 1;
@@ -1268,30 +1388,25 @@ async function renderPage() {
         viewport
     }).promise;
 
-    document.getElementById("pageCount").textContent =
-        `Page ${currentPage} of ${pdfDoc.numPages}`;
+    const pageCountEl = document.getElementById("pageCount");
+    if (pageCountEl) pageCountEl.textContent = `Page ${currentPage} of ${pdfDoc.numPages}`;
 
-    document.getElementById("prevPage").disabled =
-        currentPage <= 1;
+    const prevBtn = document.getElementById("prevPage");
+    if (prevBtn) prevBtn.disabled = currentPage <= 1;
 
-    document.getElementById("nextPage").disabled =
-        currentPage >= pdfDoc.numPages;
+    const nextBtn = document.getElementById("nextPage");
+    if (nextBtn) nextBtn.disabled = currentPage >= pdfDoc.numPages;
 
-    document.getElementById("progressBar").style.width =
-        (currentPage / pdfDoc.numPages * 100) + "%";
+    const progressBar = document.getElementById("progressBar");
+    if (progressBar) progressBar.style.width = (currentPage / pdfDoc.numPages * 100) + "%";
 
-    document.getElementById("pageShell").style.transform =
-        "perspective(1000px) rotateY(-1deg)";
+    const pageShell = document.getElementById("pageShell");
+    if (pageShell) pageShell.style.transform = "perspective(1000px) rotateY(-1deg)";
 }
 
 function turnPage(delta) {
     if (!pdfDoc) return;
-
-    currentPage = Math.max(
-        1,
-        Math.min(pdfDoc.numPages, currentPage + delta)
-    );
-
+    currentPage = Math.max(1, Math.min(pdfDoc.numPages, currentPage + delta));
     renderPage();
 }
 
@@ -1301,17 +1416,15 @@ function changeZoom(delta) {
 }
 
 function closeReader() {
-    document.getElementById("reader").classList.remove("show");
-
+    document.getElementById("reader")?.classList.remove("show");
     document.body.style.overflow = "";
-
     pdfDoc = null;
     activeBook = null;
 }
 
 function toggleFullscreen() {
     const el = document.getElementById("reader");
-
+    if (!el) return;
     if (!document.fullscreenElement) {
         el.requestFullscreen?.();
     } else {
@@ -1319,9 +1432,9 @@ function toggleFullscreen() {
     }
 }
 
+// Attach event listeners
 window.addEventListener("keydown", e => {
-    if (!document.getElementById("reader").classList.contains("show")) return;
-
+    if (!document.getElementById("reader")?.classList.contains("show")) return;
     if (e.key === "ArrowRight") turnPage(1);
     if (e.key === "ArrowLeft") turnPage(-1);
     if (e.key === "Escape") closeReader();
@@ -1331,6 +1444,49 @@ window.addEventListener("resize", () => {
     if (pdfDoc) renderPage();
 });
 
+// Bind UI action functions to global scope so inline onclick handles work
+window.openAdmin = openAdmin;
+window.closeAdmin = closeAdmin;
+window.login = login;
+window.logout = logout;
+window.addBook = addBook;
+window.removeBook = removeBook;
+window.openReader = openReader;
+window.closeReader = closeReader;
+window.turnPage = turnPage;
+window.changeZoom = changeZoom;
+window.toggleFullscreen = toggleFullscreen;
+window.scrollToBooks = scrollToBooks;
+window.renderBooks = renderBooks;
+
+// Set up real-time Firebase Firestore listener
+try {
+    onSnapshot(collection(db, "books"), (snapshot) => {
+        firestoreBooks = [];
+        snapshot.forEach((docSnap) => {
+            const d = docSnap.data();
+            firestoreBooks.push({
+                id: docSnap.id,
+                title: d.title || "Untitled",
+                author: d.author || "Unknown author",
+                coverUrl: d.coverUrl || "",
+                pdfUrl: d.pdfUrl || "",
+                fileName: d.fileName || "",
+                fileSize: d.fileSize || 0,
+                addedAt: d.addedAt || Date.now()
+            });
+        });
+        firestoreBooks.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+        renderBooks();
+        refreshAdminList();
+    }, (error) => {
+        handleFirestoreError(error, OperationType.GET, "books");
+    });
+} catch (snapErr) {
+    console.warn("Firestore onSnapshot setup warning:", snapErr.message);
+}
+
+// Initial bootstrap
 (async () => {
     try {
         const status = await api("/admin/me");
@@ -1340,7 +1496,6 @@ window.addEventListener("resize", () => {
             isAdmin = true;
         }
     }
-
     renderBooks();
 })();
 </script>

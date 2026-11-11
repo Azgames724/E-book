@@ -30,6 +30,18 @@ const SESSION_SECRET = process.env.SESSION_SECRET || "page-co-digital-library-se
 app.set("trust proxy", true);
 app.disable("x-powered-by");
 
+let db = null;
+try {
+    const firebaseConfig = require("./firebase-applet-config.json");
+    const { initializeApp } = require("firebase/app");
+    const { getFirestore } = require("firebase/firestore");
+    const firebaseApp = initializeApp(firebaseConfig);
+    db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+    console.log("Firebase Firestore initialized in server.js");
+} catch (err) {
+    console.warn("Firebase initialization warning in server.js:", err.message);
+}
+
 // Enable CORS for cross-device requests and GitHub Pages frontend
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -160,20 +172,44 @@ app.get("/api/health", (req, res) => {
 });
 
 // GET ALL BOOKS
-app.get("/api/books", (req, res) => {
-    const books = readBooks().map(book => ({
+app.get("/api/books", async (req, res) => {
+    let firestoreBooks = [];
+    if (db) {
+        try {
+            const { collection, getDocs } = require("firebase/firestore");
+            const snap = await getDocs(collection(db, "books"));
+            snap.forEach(d => {
+                firestoreBooks.push(d.data());
+            });
+        } catch (e) {
+            console.warn("Firestore getDocs warning:", e.message);
+        }
+    }
+
+    const localBooks = readBooks().map(book => ({
         id: book.id,
         title: book.title,
         author: book.author,
         coverUrl: `/api/books/${book.id}/cover`,
+        pdfUrl: `/api/books/${book.id}/pdf`,
         addedAt: book.addedAt
     }));
 
-    res.json(books);
+    const bookMap = new Map();
+    for (const b of localBooks) {
+        bookMap.set(b.id, b);
+    }
+    for (const b of firestoreBooks) {
+        bookMap.set(b.id, b);
+    }
+
+    const result = Array.from(bookMap.values()).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+    res.json(result);
 });
 
 // GET PDF
 app.get("/api/books/:id/pdf", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
     const book = readBooks().find(
         b => b.id === req.params.id
     );
@@ -198,6 +234,7 @@ app.get("/api/books/:id/pdf", (req, res) => {
 
 // GET COVER
 app.get("/api/books/:id/cover", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
     const book = readBooks().find(
         b => b.id === req.params.id
     );
@@ -277,7 +314,7 @@ app.post(
         { name: "pdf", maxCount: 1 },
         { name: "cover", maxCount: 1 }
     ]),
-    (req, res) => {
+    async (req, res) => {
 
         const title = String(
             req.body.title || ""
@@ -328,11 +365,37 @@ app.post(
 
         writeBooks(books);
 
+        // Synchronize uploaded book to Firebase Firestore so all phones see it
+        if (db) {
+            try {
+                const { doc, setDoc } = require("firebase/firestore");
+                const originHost = req.get("host") || "ais-pre-33fyudgfv7gkg7rmslaoss-835682037296.europe-west2.run.app";
+                const isLocal = originHost.includes("localhost") || originHost.includes("127.0.0.1");
+                const protocol = isLocal ? "http" : "https";
+                const baseUrl = `${protocol}://${originHost}`;
+
+                await setDoc(doc(db, "books", book.id), {
+                    id: book.id,
+                    title: book.title,
+                    author: book.author || "Unknown author",
+                    coverUrl: `${baseUrl}/api/books/${book.id}/cover`,
+                    pdfUrl: `${baseUrl}/api/books/${book.id}/pdf`,
+                    fileName: pdf.originalname || "book.pdf",
+                    fileSize: pdf.size || 0,
+                    addedAt: book.addedAt
+                });
+                console.log(`Synced uploaded book ${book.id} (${book.title}) to Firestore`);
+            } catch (fbErr) {
+                console.error("Firestore sync error:", fbErr.message);
+            }
+        }
+
         res.status(201).json({
             id: book.id,
             title: book.title,
             author: book.author,
             coverUrl: `/api/books/${book.id}/cover`,
+            pdfUrl: `/api/books/${book.id}/pdf`,
             addedAt: book.addedAt
         });
     }
@@ -342,7 +405,7 @@ app.post(
 app.delete(
     "/api/admin/books/:id",
     requireAdmin,
-    (req, res) => {
+    async (req, res) => {
 
         const books = readBooks();
 
@@ -351,9 +414,14 @@ app.delete(
         );
 
         if (!book) {
-            return res.status(404).json({
-                error: "Book not found."
-            });
+            // Even if not found locally, try deleting from Firestore
+            if (db) {
+                try {
+                    const { doc, deleteDoc } = require("firebase/firestore");
+                    await deleteDoc(doc(db, "books", req.params.id));
+                } catch (_) {}
+            }
+            return res.json({ ok: true });
         }
 
         writeBooks(
@@ -369,6 +437,16 @@ app.delete(
             path.join(UPLOAD_DIR, book.coverFile),
             { force: true }
         );
+
+        if (db) {
+            try {
+                const { doc, deleteDoc } = require("firebase/firestore");
+                await deleteDoc(doc(db, "books", req.params.id));
+                console.log(`Deleted book ${req.params.id} from Firestore`);
+            } catch (fbErr) {
+                console.error("Firestore delete error:", fbErr.message);
+            }
+        }
 
         res.json({ ok: true });
     }

@@ -1,0 +1,64 @@
+{
+  "entities": {
+    "Book": {
+      "title": "Book",
+      "description": "A digital library eBook entry with metadata and reader access link",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the book",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the book",
+          "maxLength": 200
+        },
+        "author": {
+          "type": "string",
+          "description": "Author or publisher of the book",
+          "maxLength": 150
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional book summary or synopsis",
+          "maxLength": 2000
+        },
+        "category": {
+          "type": "string",
+          "description": "Genre or library category",
+          "maxLength": 100
+        },
+        "coverUrl": {
+          "type": "string",
+          "description": "URL to the book cover image or thumbnail"
+        },
+        "pdfUrl": {
+          "type": "string",
+          "description": "Direct URL to view or download the book PDF"
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original filename of the uploaded file",
+          "maxLength": 255
+        },
+        "fileSize": {
+          "type": "number",
+          "description": "File size in bytes"
+        },
+        "addedAt": {
+          "type": "number",
+          "description": "Timestamp in milliseconds when book was added"
+        }
+      },
+      "required": ["id", "title", "author", "pdfUrl"]
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": "Book",
+      "description": "Public library catalog of books readable by all users and writable by library admins"
+    }
+  }
+}

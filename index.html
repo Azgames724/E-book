@@ -599,7 +599,8 @@ Books added by the administrator will appear here for readers.
 <div class="field">
 <label>Admin password</label>
 <input id="adminPassword" type="password"
-placeholder="Enter password">
+placeholder="Enter password"
+onkeydown="if(event.key==='Enter')login()">
 </div>
 
 <div class="actions">
@@ -699,17 +700,33 @@ if (window.pdfjsLib) {
 }
 
 async function api(path, options = {}) {
-    const response = await fetch(API + path, {
-        credentials: "same-origin",
-        ...options
-    });
+    let response;
+    try {
+        response = await fetch(API + path, {
+            credentials: "include",
+            ...options
+        });
+    } catch (netErr) {
+        throw new Error("Unable to reach the server. Please check your connection.");
+    }
 
-    const data = response.headers.get("content-type")?.includes("application/json")
-        ? await response.json()
-        : null;
+    let data = null;
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+        try {
+            data = await response.json();
+        } catch (_) {}
+    } else {
+        try {
+            const text = await response.text();
+            if (text && text.length < 200) {
+                data = { error: text };
+            }
+        } catch (_) {}
+    }
 
     if (!response.ok) {
-        throw new Error(data?.error || "Request failed.");
+        throw new Error(data?.error || `Request failed (${response.status})`);
     }
 
     return data;
@@ -728,7 +745,7 @@ function toast(msg) {
 
     setTimeout(() => {
         t.classList.remove("show");
-    }, 2600);
+    }, 2800);
 }
 
 function openAdmin() {
@@ -748,8 +765,13 @@ function closeAdmin() {
 }
 
 async function login() {
-    const password =
-        document.getElementById("adminPassword").value;
+    const input = document.getElementById("adminPassword");
+    const password = (input?.value || "").trim();
+
+    if (!password) {
+        toast("Please enter the administrator password.");
+        return;
+    }
 
     try {
         await api("/admin/login", {
@@ -762,9 +784,10 @@ async function login() {
 
         isAdmin = true;
 
-        document.getElementById("adminPassword").value = "";
+        if (input) input.value = "";
 
         openAdmin();
+        toast("Signed in successfully.");
 
     } catch (e) {
         toast(e.message);
